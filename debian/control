@@ -1,0 +1,15 @@
+Source: autoipv6ptr
+Maintainer: Joerg Dorchain <joerg@dorchain.net>
+Section: perl
+Priority: optional
+Build-Depends: debhelper-compat (= 13)
+Build-Depends-Indep: perl
+Standards-Version: 4.5.1
+Rules-Requires-Root: no
+
+Package: autoipv6ptr
+Architecture: all
+Depends: ${misc:Depends},
+         ${perl:Depends}
+Description: DNS server that automatically generates ipv6 PTR records from the query
+  Optionally use a zone file for fixed entries

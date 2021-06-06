@@ -1,0 +1,5 @@
+autoipv6ptr (0.01-1) unstable; urgency=low
+
+  * Initial release.
+
+ -- Joerg Dorchain <joerg@dorchain.net>  Sun, 6 Jun 2021 10:23:53 +0200
