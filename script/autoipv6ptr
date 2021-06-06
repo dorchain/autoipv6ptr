@@ -1,0 +1,127 @@
+#!/usr/bin/perl
+
+use Net::DNS::Nameserver;
+use Net::Server::Daemonize qw(daemonize);
+use Getopt::Long;
+use File::Basename;
+use Tie::Syslog;
+use Data::Dumper;
+
+my $addrs = [ '::1', '127.0.0.1' ];
+my $port = 53;
+my $file = '';
+my $verbose = '';
+my $suffix = '';
+my $ttl = 900;
+my $debug = '';
+
+#------------------------------------------------------------------------------
+# ReplyHandler - based on Default reply handler  from Net::DNS::Nameserver;
+#------------------------------------------------------------------------------
+
+sub reply_handler {
+	my ( $qname, $qclass, $qtype, $peerhost, $query, $conn ) = @_;
+	my $opcode = $query->header->opcode;
+	my $rcode  = 'NOERROR';
+	my @ans;
+
+	my $lcase = lc $qname;					# assume $qclass always 'IN'
+	my ( $leaf, @tail ) = split /\./, $lcase;
+	my $RRhash = $nameserver->{RRhash};
+	my $RRlist = $RRhash->{$leaf} || [];			# hash, then linear search
+	my @match  = grep { lc( $_->owner ) eq $lcase } @$RRlist;
+
+	if ( $qtype eq 'AXFR' ) {
+		my ($soa) = grep { $_->type eq 'SOA' } @match;
+		if ($soa) { push @ans, $soa, @{$soa->{RRlist}}, $soa }
+		else	  { $rcode = 'NOTAUTH' }
+
+	} else {
+		unless ( scalar(@match) ) {
+			my $wildcard = join '.', '*', @tail;
+			my $wildlist = $RRhash->{'*'} || [];
+			foreach ( grep { lc( $_->owner ) eq $wildcard } @$wildlist ) {
+				my $clone = bless {%$_}, ref($_);
+				$clone->owner($qname);
+				push @match, $clone;
+			}
+			$rcode = 'NXDOMAIN' unless @match;
+		}
+		@ans = grep { $_->type eq $qtype } @match;
+	}
+	if ( scalar(@ans) ) {
+		return ( $rcode, \@ans, [], [], {aa => 1}, {} );
+	}
+
+	if ( $qtype eq 'PTR' ) {
+		$answer = $qname;
+		if ($answer !~ s/\.ip6\.arpa\.?$//i ) {
+			return ( $rcode, \@ans, [], [], {aa => 1}, {} );
+		}
+		if ( length($answer) != 63) {
+			return ( $rcode, \@ans, [], [], {aa => 1}, {} );
+		}
+		if ( $answer =~ s/\.//g != 31) {
+			return ( $rcode, \@ans, [], [], {aa => 1}, {} );
+		}
+		$answer = reverse($answer);
+		$answer = $answer . ".$suffix.";
+		push @ans, Net::DNS::RR->new("$qname $ttl $qclass $qtype $answer") ;
+		$rcode = 'NOERROR';
+	} 
+	elsif ( $qtype eq 'AAAA' ) {
+		$answer = $qname;
+		#  $suffix is regex-proof after quotemeta()
+		my $sre = "\." . quotemeta($suffix) . "\.?\$";
+		if ($answer !~ s/$sre//i ) {
+			return ( $rcode, \@ans, [], [], {aa => 1}, {} );
+		}
+		if (length($answer) != 32) {
+			return ( $rcode, \@ans, [], [], {aa => 1}, {} );
+		}
+		$answer = join(':', unpack('a4' x 8, $answer));
+		push @ans, Net::DNS::RR->new("$qname $ttl $qclass $qtype $answer") ;
+		$rcode = 'NOERROR';
+	}
+	return ( $rcode, \@ans, [], [], {aa => 1}, {} );
+}
+
+GetOptions( "verbose"  => \$verbose,
+	    "debug"    => \$debug,
+            "port=i"   => \$port,
+	    "file=s"   => \$file,
+	    "addrs=s@" => \$addrs,
+	    "ttl=i"    => \$ttl,
+	    "suffix=s" => \$suffix )
+or die("Options error");
+
+if (!$suffix) { die ("need a suffix"); }
+
+$nameserver = Net::DNS::Nameserver->new(
+    LocalAddr       => $addrs,
+    LocalPort       => $port,
+    ReplyHandler    => \&reply_handler,
+    Verbose         => $verbose,
+    Truncate        => 0
+) or die("Cannot create Nameserver");
+
+$nameserver->ReadZoneFile( $file ) if $file;
+
+if ( ! $debug ) {
+    daemonize( $> , $), "/tmp/".basename($0) );
+    tie *STDOUT, 'Tie::Syslog', {
+	facility => 'LOG_DAEMON',
+	priority => 'LOG_INFO',
+    };
+    # XXX Does nto work
+    #tie *STDERR, { tied *STDOUT }, {
+    #    priority => 'LOG_ERR',
+    #};
+    tie *STDERR, 'Tie::Syslog', {
+	facility => 'LOG_DAEMON',
+	priority => 'LOG_ERR',
+    };
+    print "Daemon started\n";
+}
+
+$nameserver->main_loop();
